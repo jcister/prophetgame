@@ -491,8 +491,9 @@ export default function HomePage() {
   );
 
   const isResultPhase = phase === "finished" && Boolean(mode && result);
-  const showConfetti = isResultPhase && result?.reason === "completed";
-  const resultCopy = isResultPhase && result ? getResultCopy(result.score, result.reason, totalCards) : null;
+  const activeResult = isResultPhase && result ? result : null;
+  const showConfetti = Boolean(activeResult && activeResult.reason === "completed");
+  const resultCopy = activeResult ? getResultCopy(activeResult.score, activeResult.reason, totalCards) : null;
 
   let content: JSX.Element;
 
@@ -570,7 +571,7 @@ export default function HomePage() {
           </div>
         </section>
 
-        {isResultPhase && resultCopy && (
+        {activeResult && resultCopy && (
           <section className="pixel-border w-full max-w-5xl bg-panel/90 px-4 py-5 text-center">
             <h2 className="text-xl text-accent drop-shadow-[2px_2px_0_#000]">{resultCopy.heading}</h2>
             <p className="mt-2 text-[11px] uppercase tracking-[0.24em] text-slate-300">
@@ -580,9 +581,9 @@ export default function HomePage() {
               <span>
                 Score: <span className="text-accent">{score}</span> / {totalCards}
               </span>
-              <span>Elapsed: {formatSeconds(result.elapsedSeconds)}</span>
+              <span>Elapsed: {formatSeconds(activeResult.elapsedSeconds)}</span>
               {mode === "timed" && (
-                <span>Remaining: {formatSeconds(result.remainingSeconds)}</span>
+                <span>Remaining: {formatSeconds(activeResult.remainingSeconds)}</span>
               )}
             </div>
           </section>
