@@ -124,6 +124,7 @@ function GalleryCardContent({ card, state, revealYears, cardScale }: CardContent
           alt={card.name}
           width={220}
           height={294}
+          unoptimized
           className="w-full rounded-sm border-2 border-black object-cover"
           style={{ aspectRatio: "3 / 4", maxHeight: `${imageMaxHeight}px` }}
         />

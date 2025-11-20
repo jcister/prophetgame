@@ -192,6 +192,7 @@ export function TitleScreen({
             alt="Pixelated temple silhouette with gradient sky"
             width={1920}
             height={1080}
+            unoptimized
             priority
           />
         ) : (
