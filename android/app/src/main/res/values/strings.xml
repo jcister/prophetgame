@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Prophet Order Challenge</string>
+    <string name="title_activity_main">Prophet Order Challenge</string>
+    <string name="package_name">org.prophetgame.app</string>
+    <string name="custom_url_scheme">org.prophetgame.app</string>
+</resources>

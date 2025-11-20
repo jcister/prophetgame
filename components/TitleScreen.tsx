@@ -1,9 +1,28 @@
 "use client";
 
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
+import Image from "next/image";
 import type { GameMode } from "@/types/game";
 import type { SoundKey } from "@/hooks/useGameAudio";
 
 type PlaySound = (key: SoundKey, options?: { allowWhileMuted?: boolean }) => void;
+
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
+};
+
+type NavigatorStandalone = Navigator & { standalone?: boolean };
+
+const getIsInstalled = () => {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  const nav = window.navigator as NavigatorStandalone;
+  return window.matchMedia("(display-mode: standalone)").matches || nav.standalone === true;
+};
 
 interface TitleScreenProps {
   onStart: (mode: GameMode) => void;
@@ -28,6 +47,12 @@ export function TitleScreen({
   const maxMinutes = Math.floor(maxTimedSeconds / 60);
   const timedMinutes = Math.round(timedDurationSeconds / 60);
   const timedMinutesInputId = "timed-minutes";
+  const isNativeRuntime = useMemo(() => Capacitor.isNativePlatform(), []);
+  const [installPromptEvent, setInstallPromptEvent] = useState<BeforeInstallPromptEvent | null>(null);
+  const [isInstallPromptSupported, setIsInstallPromptSupported] = useState(false);
+  const [isInstalled, setIsInstalled] = useState(false);
+  const [showInstallHelp, setShowInstallHelp] = useState(false);
+  const autoPromptedRef = useRef(false);
 
   const handleTimedMinutesChange = (value: string) => {
     const parsed = Number.parseInt(value, 10);
@@ -51,20 +76,136 @@ export function TitleScreen({
     }
   };
 
+  const promptForInstallation = useCallback(
+    async (promptEvent: BeforeInstallPromptEvent, source: "auto" | "manual") => {
+      let consumed = true;
+
+      try {
+        if (source === "manual") {
+          playSound("ui-select", { allowWhileMuted: true });
+        }
+
+        await promptEvent.prompt();
+        const choiceResult = await promptEvent.userChoice.catch(() => ({ outcome: "dismissed", platform: "" }));
+
+        if (choiceResult?.outcome === "accepted") {
+          setIsInstalled(true);
+        }
+      } catch (error) {
+        consumed = false;
+        console.error("Install prompt failed", error);
+      } finally {
+        if (consumed) {
+          setInstallPromptEvent(null);
+          setIsInstallPromptSupported(false);
+        } else {
+          setInstallPromptEvent(promptEvent);
+          setIsInstallPromptSupported(true);
+        }
+      }
+    },
+    [playSound]
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    const standaloneMedia = window.matchMedia("(display-mode: standalone)");
+    const updateInstalled = () => setIsInstalled(getIsInstalled());
+
+    updateInstalled();
+    const listener = () => updateInstalled();
+
+    if (typeof standaloneMedia.addEventListener === "function") {
+      standaloneMedia.addEventListener("change", listener);
+    } else if (typeof standaloneMedia.addListener === "function") {
+      standaloneMedia.addListener(listener);
+    }
+
+    return () => {
+      if (typeof standaloneMedia.removeEventListener === "function") {
+        standaloneMedia.removeEventListener("change", listener);
+      } else if (typeof standaloneMedia.removeListener === "function") {
+        standaloneMedia.removeListener(listener);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    const handleBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      const promptEvent = event as BeforeInstallPromptEvent;
+      setInstallPromptEvent(promptEvent);
+      setIsInstallPromptSupported(true);
+      setShowInstallHelp(false);
+
+      if (!autoPromptedRef.current && !isInstalled) {
+        autoPromptedRef.current = true;
+        void promptForInstallation(promptEvent, "auto");
+      }
+    };
+
+    const handleAppInstalled = () => {
+      setIsInstalled(true);
+      setInstallPromptEvent(null);
+      setIsInstallPromptSupported(false);
+      setShowInstallHelp(false);
+    };
+
+    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+    window.addEventListener("appinstalled", handleAppInstalled);
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", handleAppInstalled);
+    };
+  }, [isInstalled, promptForInstallation]);
+
+  const handleInstallClick = async () => {
+    if (isInstalled) {
+      setShowInstallHelp(false);
+      return;
+    }
+
+    if (installPromptEvent) {
+      await promptForInstallation(installPromptEvent, "manual");
+    } else {
+      playSound("ui-select", { allowWhileMuted: true });
+      setShowInstallHelp(true);
+    }
+  };
+
   return (
     <section className="hero-section">
       <div className="hero-section__background" aria-hidden="true">
         <div className="hero-section__gradient" />
-        <video
-          className="hero-section__media"
-          autoPlay
-          loop
-          muted
-          playsInline
-          preload="auto"
-        >
-          <source src="/images/hero/background_video.mp4" type="video/mp4" />
-        </video>
+        {isNativeRuntime ? (
+          <Image
+            className="hero-section__media"
+            src="/images/hero/hero_section.png"
+            alt="Pixelated temple silhouette with gradient sky"
+            width={1920}
+            height={1080}
+            priority
+          />
+        ) : (
+          <video
+            className="hero-section__media"
+            autoPlay
+            loop
+            muted
+            playsInline
+            preload="auto"
+          >
+            <source src="/images/hero/background_video.mp4" type="video/mp4" />
+          </video>
+        )}
         <div className="hero-section__overlay" />
         <div className="hero-section__sheen" />
         <div className="hero-section__scanline" />
@@ -92,7 +233,27 @@ export function TitleScreen({
             >
               About the Developer
             </button>
+            {!isInstalled && (
+              <button
+                type="button"
+                className="pixel-button hero-button"
+                onClick={handleInstallClick}
+                disabled={!isInstallPromptSupported}
+                title={
+                  isInstallPromptSupported
+                    ? "Install the app on this device"
+                    : "Install prompt not available. Use your browser's Add to Home Screen option."
+                }
+              >
+                Install App
+              </button>
+            )}
           </div>
+          {showInstallHelp && !isInstallPromptSupported && !isInstalled && (
+            <p className="hero-panel__hint" role="status">
+              Install prompt unavailable. Use your browser menu to add the site to your home screen.
+            </p>
+          )}
           <p className="hero-source">
             Prophet roster sourced from the Church history site:
             <br />
