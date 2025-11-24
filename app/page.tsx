@@ -1,6 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import clsx from "clsx";
+import Image from "next/image";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TitleScreen } from "@/components/TitleScreen";
 import { GameBoard } from "@/components/GameBoard";
 import { PixelDialog } from "@/components/PixelDialog";
@@ -18,9 +20,73 @@ import type {
   LayoutMode
 } from "@/types/game";
 
+type QuizPromptType = "image-to-name" | "name-to-image";
+
+interface QuizChoice {
+  id: string;
+  name: string;
+  image: string;
+}
+
+interface QuizQuestion {
+  id: string;
+  promptType: QuizPromptType;
+  promptName: string;
+  promptImage: string;
+  choices: QuizChoice[];
+  correctId: string;
+}
+
+interface QuizAnswer {
+  choiceId: string;
+  correct: boolean;
+}
+
 const DEFAULT_TIMED_SECONDS = 180;
 const MIN_TIMED_SECONDS = 60;
 const MAX_TIMED_SECONDS = 600;
+
+function shuffleArray<T>(items: T[]): T[] {
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+function toQuizChoice(card: GameCard): QuizChoice {
+  return {
+    id: card.id,
+    name: card.name,
+    image: card.image
+  };
+}
+
+function pickQuizChoices(allCards: GameCard[], correctCard: GameCard, count: number): QuizChoice[] {
+  const eligible = allCards.filter((card) => card.id !== correctCard.id);
+  return shuffleArray(eligible)
+    .slice(0, count)
+    .map((card) => toQuizChoice(card));
+}
+
+function createQuizQuestions(allCards: GameCard[]): QuizQuestion[] {
+  const shuffledCards = shuffleArray(allCards);
+  return shuffledCards.map((card) => {
+    const promptType: QuizPromptType = Math.random() < 0.5 ? "image-to-name" : "name-to-image";
+    const distractors = pickQuizChoices(allCards, card, 3);
+    const choices = shuffleArray([toQuizChoice(card), ...distractors]);
+
+    return {
+      id: card.id,
+      promptType,
+      promptName: card.name,
+      promptImage: card.image,
+      choices,
+      correctId: card.id
+    };
+  });
+}
 
 interface ExitDialogOptions {
   preservePause?: boolean;
@@ -60,7 +126,21 @@ export default function HomePage() {
   const [developerDialogOpen, setDeveloperDialogOpen] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [cardScale, setCardScale] = useState(1);
+  const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([]);
+  const [quizIndex, setQuizIndex] = useState(0);
+  const [quizAnswers, setQuizAnswers] = useState<Record<string, QuizAnswer>>({});
+  const [quizHasAnswered, setQuizHasAnswered] = useState(false);
+  const [quizLastCorrect, setQuizLastCorrect] = useState<boolean | null>(null);
+  const [quizScore, setQuizScore] = useState(0);
+  const quizAutoAdvanceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const totalCards = orderedCards.length;
+
+  const clearQuizAutoAdvance = useCallback(() => {
+    if (quizAutoAdvanceRef.current) {
+      clearTimeout(quizAutoAdvanceRef.current);
+      quizAutoAdvanceRef.current = null;
+    }
+  }, []);
 
   const playAudio = useGameAudio();
   const playSound = useCallback(
@@ -93,8 +173,46 @@ export default function HomePage() {
     return source;
   }, [orderedCards]);
 
+  const startQuizRound = useCallback(
+    (options: { showInstructions?: boolean } = {}) => {
+      clearQuizAutoAdvance();
+      const shouldShowInstructions = options.showInstructions ?? false;
+      const questions = createQuizQuestions(orderedCards);
+      setQuizQuestions(questions);
+      setQuizIndex(0);
+      setQuizAnswers({});
+      setQuizScore(0);
+      setQuizHasAnswered(false);
+      setQuizLastCorrect(null);
+      setCards([]);
+      setFeedback({});
+      setScore(0);
+      setSelectedId(null);
+      setResult(null);
+      setRevealYears(false);
+      setStartTime(null);
+      setRemainingSeconds(0);
+      setIsPaused(false);
+      setPauseDialogOpen(false);
+      setExitDialogOpen(false);
+      setResumePauseDialogAfterExit(false);
+      setPausedBeforeExitDialog(false);
+      setHasSubmitted(false);
+      setSubmitDialogOpen(false);
+      setShowInstructions(shouldShowInstructions);
+      setPhase("playing");
+    },
+    [clearQuizAutoAdvance, orderedCards]
+  );
+
   const resetRound = useCallback(
     (currentMode: GameMode, options: { showInstructions?: boolean } = {}) => {
+      if (currentMode === "quiz") {
+        startQuizRound(options);
+        return;
+      }
+
+      clearQuizAutoAdvance();
       const shouldShowInstructions = options.showInstructions ?? false;
       const shuffled = shuffleCards();
       setCards(shuffled);
@@ -114,17 +232,21 @@ export default function HomePage() {
       setSubmitDialogOpen(false);
       setShowInstructions(shouldShowInstructions);
     },
-    [createFeedbackMap, shuffleCards, timedDuration]
+    [clearQuizAutoAdvance, createFeedbackMap, shuffleCards, startQuizRound, timedDuration]
   );
 
   const handleStart = useCallback(
     (nextMode: GameMode) => {
       setMode(nextMode);
-      resetRound(nextMode, { showInstructions: true });
-      setPhase("playing");
+      if (nextMode === "quiz") {
+        startQuizRound({ showInstructions: true });
+      } else {
+        resetRound(nextMode, { showInstructions: true });
+        setPhase("playing");
+      }
       playSound("game-start");
     },
-    [playSound, resetRound]
+    [playSound, resetRound, startQuizRound]
   );
 
   const finishGame = useCallback(
@@ -299,7 +421,9 @@ export default function HomePage() {
 
   const handleInstructionsDismiss = useCallback(() => {
     setShowInstructions(false);
-    setStartTime(Date.now());
+    if (mode !== "quiz") {
+      setStartTime(Date.now());
+    }
     if (mode === "timed") {
       setIsPaused(false);
     }
@@ -342,11 +466,18 @@ export default function HomePage() {
   }, [mode, playSound, resetRound]);
 
   const resetToTitle = useCallback(() => {
+    clearQuizAutoAdvance();
     setPhase("title");
     setMode(null);
     setCards([]);
     setFeedback(createFeedbackMap());
     setScore(0);
+    setQuizQuestions([]);
+    setQuizIndex(0);
+    setQuizAnswers({});
+    setQuizScore(0);
+    setQuizHasAnswered(false);
+    setQuizLastCorrect(null);
     setSelectedId(null);
     setResult(null);
     setRevealYears(false);
@@ -362,17 +493,23 @@ export default function HomePage() {
     setSubmitDialogOpen(false);
     setShowInstructions(false);
     setDeveloperDialogOpen(false);
-  }, [createFeedbackMap, timedDuration]);
+  }, [clearQuizAutoAdvance, createFeedbackMap, timedDuration]);
 
   const handlePlayAgain = useCallback(() => {
     if (!mode) {
       return;
     }
 
-    resetRound(mode, { showInstructions: true });
-    setPhase("playing");
+    clearQuizAutoAdvance();
+    if (mode === "quiz") {
+      startQuizRound({ showInstructions: true });
+    } else {
+      resetRound(mode, { showInstructions: true });
+      setPhase("playing");
+    }
+
     playSound("game-start");
-  }, [mode, playSound, resetRound]);
+  }, [clearQuizAutoAdvance, mode, playSound, resetRound, startQuizRound]);
 
   const openExitDialog = useCallback(
     (options: ExitDialogOptions = {}) => {
@@ -490,10 +627,163 @@ export default function HomePage() {
     [cardScale, playSound]
   );
 
+  const finishQuizRound = useCallback(() => {
+    clearQuizAutoAdvance();
+    const finalScore = Object.values(quizAnswers).filter((entry) => entry.correct).length;
+    setQuizScore(finalScore);
+    setScore(finalScore);
+    setPhase("finished");
+    setQuizHasAnswered(false);
+    setQuizLastCorrect(null);
+    setShowInstructions(false);
+    setPauseDialogOpen(false);
+    setExitDialogOpen(false);
+    setResumePauseDialogAfterExit(false);
+    setPausedBeforeExitDialog(false);
+    setResult(null);
+    setRevealYears(false);
+    setIsPaused(false);
+    const perfect = quizQuestions.length > 0 && finalScore === quizQuestions.length;
+    playSound(perfect ? "success" : "ui-select");
+  }, [clearQuizAutoAdvance, playSound, quizAnswers, quizQuestions.length]);
+
+  const handleQuizChoiceSelect = useCallback(
+    (choiceId: string) => {
+      if (mode !== "quiz") {
+        return;
+      }
+
+      const question = quizQuestions[quizIndex];
+      if (!question) {
+        return;
+      }
+
+      if (quizAnswers[question.id]) {
+        return;
+      }
+
+      const correct = choiceId === question.correctId;
+      setQuizAnswers((prev) => ({
+        ...prev,
+        [question.id]: { choiceId, correct }
+      }));
+      setQuizHasAnswered(true);
+      setQuizLastCorrect(correct);
+      setQuizScore((prev) => (correct ? prev + 1 : prev));
+      playSound(correct ? "success" : "error");
+    },
+    [mode, playSound, quizAnswers, quizIndex, quizQuestions]
+  );
+
+  const handleQuizNext = useCallback(() => {
+    if (mode !== "quiz") {
+      return;
+    }
+
+    clearQuizAutoAdvance();
+    const question = quizQuestions[quizIndex];
+    if (!question) {
+      return;
+    }
+
+    if (!quizAnswers[question.id]) {
+      playSound("error");
+      return;
+    }
+
+    if (quizIndex >= quizQuestions.length - 1) {
+      finishQuizRound();
+      return;
+    }
+
+    const nextIndex = quizIndex + 1;
+    playSound("ui-select");
+    setQuizIndex(nextIndex);
+    const nextQuestion = quizQuestions[nextIndex];
+    const nextAnswer = nextQuestion ? quizAnswers[nextQuestion.id] : undefined;
+    setQuizHasAnswered(Boolean(nextAnswer));
+    setQuizLastCorrect(nextAnswer?.correct ?? null);
+  }, [clearQuizAutoAdvance, finishQuizRound, mode, playSound, quizAnswers, quizIndex, quizQuestions]);
+
+  const handleQuizRestart = useCallback(() => {
+    if (mode !== "quiz") {
+      return;
+    }
+
+    clearQuizAutoAdvance();
+    startQuizRound({ showInstructions: true });
+    playSound("game-start");
+  }, [clearQuizAutoAdvance, mode, playSound, startQuizRound]);
+
+  useEffect(() => {
+    if (mode !== "quiz" || phase !== "playing") {
+      clearQuizAutoAdvance();
+      return;
+    }
+
+    const question = quizQuestions[quizIndex];
+    if (!quizHasAnswered || !question) {
+      clearQuizAutoAdvance();
+      return;
+    }
+
+    clearQuizAutoAdvance();
+    quizAutoAdvanceRef.current = setTimeout(() => {
+      quizAutoAdvanceRef.current = null;
+      handleQuizNext();
+    }, 3000);
+
+    return () => {
+      clearQuizAutoAdvance();
+    };
+  }, [clearQuizAutoAdvance, handleQuizNext, mode, phase, quizHasAnswered, quizIndex, quizQuestions]);
+
   const isResultPhase = phase === "finished" && Boolean(mode && result);
   const activeResult = isResultPhase && result ? result : null;
-  const showConfetti = Boolean(activeResult && activeResult.reason === "completed");
+  const isQuizMode = mode === "quiz";
+  const quizTotal = quizQuestions.length;
+  const quizTotalDisplay = quizTotal || totalCards;
+  const isQuizFinished = isQuizMode && phase === "finished";
+  const activeQuizQuestion = isQuizMode ? quizQuestions[quizIndex] : undefined;
+  const activeQuizAnswer = activeQuizQuestion ? quizAnswers[activeQuizQuestion.id] : undefined;
+  const isQuizPerfect = isQuizFinished && quizTotal > 0 && quizScore === quizTotal;
+  const showConfetti = Boolean(activeResult && activeResult.reason === "completed") || isQuizPerfect;
   const resultCopy = activeResult ? getResultCopy(activeResult.score, activeResult.reason, totalCards) : null;
+  const quizResultCopy = isQuizFinished ? getQuizResultCopy(quizScore, quizTotal) : null;
+  const isLastQuizQuestion = isQuizMode && quizTotal > 0 ? quizIndex >= quizTotal - 1 : false;
+  const instructionsTitle = isQuizMode ? "Quiz Rules" : "How to Play";
+  const instructionsConfirmLabel = isQuizMode ? "Start Quiz" : "Let's Go";
+  const instructionsMessage = isQuizMode ? (
+    <div className="space-y-3 text-left text-sm leading-relaxed text-slate-200">
+      <p>
+        Identify each prophet exactly once. Every round shuffles all {totalCards} leaders—no duplicates.
+      </p>
+      <ul className="space-y-2 text-[11px] uppercase tracking-[0.18em] text-slate-300">
+        <li>Read the prompt. It alternates between portraits and names.</li>
+        <li>Select an answer to lock it in—each question allows one guess.</li>
+        <li>Rounds auto-advance after 3 seconds, or press Next to skip ahead.</li>
+      </ul>
+      <p className="text-[10px] uppercase tracking-[0.2em] text-slate-400">
+        Aim for a perfect streak to trigger the victory confetti.
+      </p>
+    </div>
+  ) : (
+    <div className="space-y-3 text-left text-sm leading-relaxed text-slate-200">
+      <p>Swap portraits until every prophet is in chronological order.</p>
+      <ul className="space-y-2 text-[11px] uppercase tracking-[0.18em] text-slate-300">
+        <li>Tap two cards to swap their positions on the board.</li>
+        <li>Submit Order when you are confident in the timeline.</li>
+        {mode === "timed" ? (
+          <li>The clock is paused right now—press Pause later if you need another break.</li>
+        ) : (
+          <li>Reset shuffles the deck for another practice round.</li>
+        )}
+      </ul>
+      <p className="text-[10px] uppercase tracking-[0.2em] text-slate-400">
+        Years reveal after you submit or when the timer runs out.
+      </p>
+    </div>
+  );
 
   let content: JSX.Element;
 
@@ -513,13 +803,51 @@ export default function HomePage() {
     content = (
       <main className="flex min-h-screen w-full flex-col items-center gap-4 px-3 pb-8 pt-6 sm:px-4">
         <section className="pixel-border w-full max-w-5xl bg-panel/90 px-3 py-3 sm:px-4 sm:py-4">
-          <div className="grid w-full gap-3 text-[11px] uppercase tracking-[0.18em] text-slate-200 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.1fr)] sm:items-center">
+          <div
+            className={clsx(
+              "grid w-full gap-3 text-[11px] uppercase tracking-[0.18em] text-slate-200 sm:items-center",
+              isQuizMode
+                ? "sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]"
+                : "sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.1fr)]"
+            )}
+          >
             <span className="flex justify-center sm:justify-start">
-              Score: <span className="ml-1 text-accent">{score}</span>
-              <span className="ml-1 text-slate-400">/ {totalCards}</span>
+              {isQuizMode ? (
+                <>
+                  Correct: <span className="ml-1 text-accent">{quizScore}</span>
+                  <span className="ml-1 text-slate-400">/ {quizTotalDisplay}</span>
+                </>
+              ) : (
+                <>
+                  Score: <span className="ml-1 text-accent">{score}</span>
+                  <span className="ml-1 text-slate-400">/ {totalCards}</span>
+                </>
+              )}
             </span>
             <div className="flex justify-center text-center">
-              {isResultPhase && result ? (
+              {isQuizMode ? (
+                isQuizFinished ? (
+                  <div className="flex flex-col items-center gap-1">
+                    <span>Quiz Complete</span>
+                    <span className="text-[9px] uppercase tracking-[0.18em] text-slate-400">
+                      {quizScore} / {quizTotalDisplay} correct
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center gap-1">
+                    <span>
+                      Question {quizTotal > 0 ? quizIndex + 1 : 0} of {quizTotalDisplay}
+                    </span>
+                    <span className="text-[9px] uppercase tracking-[0.18em] text-slate-400">
+                      {quizHasAnswered
+                        ? quizLastCorrect
+                          ? "Correct"
+                          : "Incorrect"
+                        : "Awaiting Answer"}
+                    </span>
+                  </div>
+                )
+              ) : isResultPhase && result ? (
                 <div className="flex flex-col items-center gap-1 sm:flex-row sm:gap-2">
                   <span>
                     {result.reason === "completed"
@@ -546,64 +874,231 @@ export default function HomePage() {
               )}
             </div>
             <div className="flex flex-col items-center justify-center gap-2 sm:flex-row sm:justify-end">
-              <span className="text-[9px] uppercase tracking-[0.18em] text-slate-300">Layout</span>
-              <div className="flex gap-1.5">
-                <button
-                  type="button"
-                  className="pixel-toggle pixel-border"
-                  data-active={layoutMode === "gallery"}
-                  onClick={() => handleLayoutModeChange("gallery")}
-                  aria-pressed={layoutMode === "gallery"}
-                >
-                  Gallery
-                </button>
-                <button
-                  type="button"
-                  className="pixel-toggle pixel-border"
-                  data-active={layoutMode === "list"}
-                  onClick={() => handleLayoutModeChange("list")}
-                  aria-pressed={layoutMode === "list"}
-                >
-                  List
-                </button>
-              </div>
+              {isQuizMode ? (
+                <>
+                  <span className="text-[9px] uppercase tracking-[0.18em] text-slate-300">Prompt</span>
+                  <span className="text-xs text-accent">
+                    {activeQuizQuestion
+                      ? activeQuizQuestion.promptType === "image-to-name"
+                        ? "Name that Prophet"
+                        : "Find Their Portrait"
+                      : "Preparing"}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="text-[9px] uppercase tracking-[0.18em] text-slate-300">Layout</span>
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      className="pixel-toggle pixel-border"
+                      data-active={layoutMode === "gallery"}
+                      onClick={() => handleLayoutModeChange("gallery")}
+                      aria-pressed={layoutMode === "gallery"}
+                    >
+                      Gallery
+                    </button>
+                    <button
+                      type="button"
+                      className="pixel-toggle pixel-border"
+                      data-active={layoutMode === "list"}
+                      onClick={() => handleLayoutModeChange("list")}
+                      aria-pressed={layoutMode === "list"}
+                    >
+                      List
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </section>
 
-        {activeResult && resultCopy && (
-          <section className="pixel-border w-full max-w-5xl bg-panel/90 px-4 py-5 text-center">
-            <h2 className="text-xl text-accent drop-shadow-[2px_2px_0_#000]">{resultCopy.heading}</h2>
-            <p className="mt-2 text-[11px] uppercase tracking-[0.24em] text-slate-300">
-              {resultCopy.subheading}
-            </p>
-            <div className="mt-4 flex flex-col gap-2 text-xs text-slate-200 sm:flex-row sm:justify-center sm:gap-6">
-              <span>
-                Score: <span className="text-accent">{score}</span> / {totalCards}
-              </span>
-              <span>Elapsed: {formatSeconds(activeResult.elapsedSeconds)}</span>
-              {mode === "timed" && (
-                <span>Remaining: {formatSeconds(activeResult.remainingSeconds)}</span>
-              )}
-            </div>
-          </section>
+        {isQuizMode ? (
+          isQuizFinished && quizResultCopy && (
+            <section className="pixel-border w-full max-w-5xl bg-panel/90 px-4 py-5 text-center">
+              <h2 className="text-xl text-accent drop-shadow-[2px_2px_0_#000]">{quizResultCopy.heading}</h2>
+              <p className="mt-2 text-[11px] uppercase tracking-[0.24em] text-slate-300">
+                {quizResultCopy.subheading}
+              </p>
+              <div className="mt-4 flex flex-col gap-2 text-xs text-slate-200 sm:flex-row sm:justify-center sm:gap-6">
+                <span>
+                  Correct: <span className="text-accent">{quizScore}</span> / {quizTotalDisplay}
+                </span>
+                <span>Perfect Answers: {quizScore === quizTotal ? "Yes" : "Not Yet"}</span>
+              </div>
+            </section>
+          )
+        ) : (
+          activeResult && resultCopy && (
+            <section className="pixel-border w-full max-w-5xl bg-panel/90 px-4 py-5 text-center">
+              <h2 className="text-xl text-accent drop-shadow-[2px_2px_0_#000]">{resultCopy.heading}</h2>
+              <p className="mt-2 text-[11px] uppercase tracking-[0.24em] text-slate-300">
+                {resultCopy.subheading}
+              </p>
+              <div className="mt-4 flex flex-col gap-2 text-xs text-slate-200 sm:flex-row sm:justify-center sm:gap-6">
+                <span>
+                  Score: <span className="text-accent">{score}</span> / {totalCards}
+                </span>
+                <span>Elapsed: {formatSeconds(activeResult.elapsedSeconds)}</span>
+                {mode === "timed" && (
+                  <span>Remaining: {formatSeconds(activeResult.remainingSeconds)}</span>
+                )}
+              </div>
+            </section>
+          )
         )}
 
-        <div className="w-full max-w-5xl">
-          <GameBoard
-            cards={cards}
-            selectedId={selectedId}
-            feedback={feedback}
-            revealYears={revealYears}
-            onSelect={handleSelectCard}
-            layoutMode={layoutMode}
-            cardScale={cardScale}
-            isInteractive={phase === "playing" && (!isPaused || mode !== "timed") && !hasSubmitted}
-          />
-        </div>
+        {isQuizMode ? (
+          <section className="pixel-border w-full max-w-5xl bg-panel/90 px-4 py-6">
+            {activeQuizQuestion ? (
+              <div className="grid gap-6 sm:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
+                <div className="flex flex-col items-center gap-4 text-center sm:items-start sm:text-left">
+                  {activeQuizQuestion.promptType === "image-to-name" ? (
+                    <>
+                      <span className="text-[11px] uppercase tracking-[0.24em] text-slate-300">
+                        Which prophet is shown?
+                      </span>
+                      <div className="pixel-border mx-auto w-full max-w-xs bg-panel/70 p-3 sm:mx-0">
+                        <Image
+                          src={activeQuizQuestion.promptImage}
+                          alt={activeQuizQuestion.promptName}
+                          width={320}
+                          height={320}
+                          className="h-auto w-full rounded-sm border-2 border-black object-cover"
+                          unoptimized
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-[11px] uppercase tracking-[0.24em] text-slate-300">
+                        Select the portrait of
+                      </span>
+                      <div className="pixel-border mx-auto w-full max-w-sm bg-panel/70 px-4 py-5 sm:mx-0">
+                        <p className="text-xl uppercase tracking-[0.28em] text-accent">
+                          {activeQuizQuestion.promptName}
+                        </p>
+                      </div>
+                    </>
+                  )}
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
+                    No repeats—each leader appears once per run.
+                  </p>
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                    {activeQuizAnswer
+                      ? activeQuizAnswer.correct
+                        ? "Correct! Auto-advancing in 3 seconds."
+                        : "Locked in. Auto-advancing in 3 seconds."
+                      : "Tap an answer to lock it in."}
+                  </div>
+                </div>
+                <div className="flex flex-col gap-3">
+                  <div className="grid grid-cols-2 gap-x-2 gap-y-4 sm:gap-3">
+                    {activeQuizQuestion.choices.map((choice) => {
+                      const isSelected = activeQuizAnswer?.choiceId === choice.id;
+                      const isCorrectChoice = choice.id === activeQuizQuestion.correctId;
+                      const reveal = Boolean(activeQuizAnswer);
+                      const statusLabel = isCorrectChoice ? "Correct" : isSelected ? "Selected" : null;
+                      return (
+                        <button
+                          key={choice.id}
+                          type="button"
+                          className={clsx(
+                            "pixel-border relative flex h-full flex-col items-center gap-2 bg-panel/70 px-2 py-4 text-center text-xs uppercase tracking-[0.18em] text-slate-200 transition sm:px-4 sm:py-3 sm:text-sm",
+                            reveal && isCorrectChoice && "bg-emerald-700/70",
+                            reveal && isSelected && !isCorrectChoice && "bg-rose-800/70",
+                            !reveal && "hover:-translate-y-[2px]"
+                          )}
+                          onClick={() => handleQuizChoiceSelect(choice.id)}
+                          disabled={reveal}
+                          aria-label={
+                            activeQuizQuestion.promptType === "name-to-image" ? choice.name : undefined
+                          }
+                        >
+                          {activeQuizQuestion.promptType === "image-to-name" ? (
+                            <span>{choice.name}</span>
+                          ) : (
+                            <Image
+                              src={choice.image}
+                              alt={choice.name}
+                              width={170}
+                              height={170}
+                              className="h-auto w-full rounded-sm border-2 border-black object-cover"
+                              unoptimized
+                            />
+                          )}
+                          {reveal && statusLabel && (
+                            <span
+                              className={clsx(
+                                "pointer-events-none absolute left-1/2 -top-3 -translate-x-1/2 rounded-sm px-1 py-[1px] text-[9px] uppercase tracking-[0.2em] sm:left-auto sm:right-2 sm:top-2 sm:-translate-x-0 sm:py-[2px]",
+                                isCorrectChoice
+                                  ? "bg-emerald-900/85 text-emerald-200"
+                                  : isSelected
+                                  ? "bg-rose-900/85 text-rose-200"
+                                  : "bg-slate-700/80 text-slate-200"
+                              )}
+                            >
+                              {statusLabel}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center text-sm uppercase tracking-[0.2em] text-slate-300">
+                Preparing next prophet...
+              </div>
+            )}
+          </section>
+        ) : (
+          <div className="w-full max-w-5xl">
+            <GameBoard
+              cards={cards}
+              selectedId={selectedId}
+              feedback={feedback}
+              revealYears={revealYears}
+              onSelect={handleSelectCard}
+              layoutMode={layoutMode}
+              cardScale={cardScale}
+              isInteractive={phase === "playing" && (!isPaused || mode !== "timed") && !hasSubmitted}
+            />
+          </div>
+        )}
 
         <section className="pixel-border w-full max-w-5xl bg-panel/90 px-3 py-3 sm:px-4 sm:py-4">
-          {isResultPhase && result ? (
+          {isQuizMode ? (
+            isQuizFinished ? (
+              <div className="flex flex-col items-center justify-center gap-3 sm:flex-row sm:justify-center">
+                <button type="button" className="pixel-button w-full sm:w-auto" onClick={handleQuizRestart}>
+                  Play Again
+                </button>
+                <button type="button" className="pixel-button w-full sm:w-auto" onClick={handleExitToTitle}>
+                  Exit to Title
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-between gap-3 sm:flex-row sm:flex-wrap">
+                <button type="button" className="pixel-button w-full sm:w-auto" onClick={handleQuizRestart}>
+                  Restart Quiz
+                </button>
+                <button
+                  type="button"
+                  className="pixel-button w-full sm:w-auto"
+                  onClick={handleQuizNext}
+                  disabled={!quizHasAnswered}
+                >
+                  {isLastQuizQuestion ? "Finish Quiz" : "Next Prophet"}
+                </button>
+                <button type="button" className="pixel-button w-full sm:w-auto" onClick={handleExitToTitle}>
+                  Exit to Title
+                </button>
+              </div>
+            )
+          ) : isResultPhase && result ? (
             <div className="flex flex-col items-center justify-center gap-3 sm:flex-row sm:justify-center">
               <button type="button" className="pixel-button w-full sm:w-auto" onClick={handlePlayAgain}>
                 Play Again
@@ -647,7 +1142,7 @@ export default function HomePage() {
 
   return (
     <>
-      {phase !== "title" && (
+      {phase !== "title" && !isQuizMode && (
         <aside className="fixed left-2 top-1/2 hidden -translate-y-1/2 flex-col items-center gap-3 rounded-md border-2 border-black bg-panel/90 px-3 py-4 text-[9px] uppercase tracking-[0.18em] text-slate-200 shadow-lg md:flex">
           <span>Card Size</span>
           <input
@@ -675,25 +1170,9 @@ export default function HomePage() {
       {content}
       <PixelDialog
         open={showInstructions && phase === "playing"}
-        title="How to Play"
-        message={
-          <div className="space-y-3 text-left text-sm leading-relaxed text-slate-200">
-            <p>Swap portraits until every prophet is in chronological order.</p>
-            <ul className="space-y-2 text-[11px] uppercase tracking-[0.18em] text-slate-300">
-              <li>Tap two cards to swap their positions on the board.</li>
-              <li>Submit Order when you are confident in the timeline.</li>
-              {mode === "timed" ? (
-                <li>The clock is paused right now—press Pause later if you need another break.</li>
-              ) : (
-                <li>Reset shuffles the deck for another practice round.</li>
-              )}
-            </ul>
-            <p className="text-[10px] uppercase tracking-[0.2em] text-slate-400">
-              Years reveal after you submit or when the timer runs out.
-            </p>
-          </div>
-        }
-        confirmLabel={"Let's Go"}
+        title={instructionsTitle}
+        message={instructionsMessage}
+        confirmLabel={instructionsConfirmLabel}
         onConfirm={handleInstructionsDismiss}
       />
       <PixelDialog
@@ -716,17 +1195,6 @@ export default function HomePage() {
                 prototyped with Google Gemini, then refined by hand to fit the pixel
                 aesthetic.
               </p>
-              <p className="text-[11px] uppercase tracking-[0.18em] text-slate-300">
-                Prophet roster referenced from the Church history site:
-              </p>
-              <a
-                href="https://history.churchofjesuschrist.org/training/library/general-authorities-of-the-church/list-of-presidents-of-the-church-and-their-counselors?lang=eng"
-                className="block text-xs text-accent underline"
-                target="_blank"
-                rel="noreferrer"
-              >
-                history.churchofjesuschrist.org
-              </a>
             </div>
           </div>
         }
@@ -843,5 +1311,40 @@ function getSubmittedCopy(score: number, totalCards: number): ResultCopy {
   return {
     heading: "Order Submitted!",
     subheading: "Review the highlights below and take another shot."
+  };
+}
+
+function getQuizResultCopy(score: number, total: number): ResultCopy {
+  if (total <= 0) {
+    return {
+      heading: "Quiz Complete",
+      subheading: "Take another run to set a score."
+    };
+  }
+
+  if (score >= total) {
+    return {
+      heading: "Prophet Scholar!",
+      subheading: "Perfect recall across every prophet."
+    };
+  }
+
+  if (score >= total - 2) {
+    return {
+      heading: "Nearly Prophetic!",
+      subheading: "Just a couple more answers for perfection."
+    };
+  }
+
+  if (score >= Math.ceil(total * 0.5)) {
+    return {
+      heading: "Strong Memory!",
+      subheading: "Great progress—review a few portraits and try again."
+    };
+  }
+
+  return {
+    heading: "Keep Studying!",
+    subheading: "Revisit the timeline and give it another go."
   };
 }

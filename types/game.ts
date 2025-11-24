@@ -1,6 +1,6 @@
 import type { PresidentCard } from "@/data/presidents";
 
-export type GameMode = "standard" | "timed";
+export type GameMode = "standard" | "timed" | "quiz";
 
 export type GamePhase = "title" | "playing" | "finished";
 

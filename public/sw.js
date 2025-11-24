@@ -1,4 +1,4 @@
-const PRECACHE_NAME = "prophet-precache-v3";
+const PRECACHE_NAME = "prophet-precache-v4";
 const RUNTIME_NAME = "prophet-runtime-v1";
 const OFFLINE_URL = "/offline";
 

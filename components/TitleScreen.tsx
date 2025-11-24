@@ -291,6 +291,13 @@ export function TitleScreen({
               >
                 Timed Challenge
               </button>
+              <button
+                type="button"
+                className="pixel-button hero-button"
+                onClick={() => onStart("quiz")}
+              >
+                Quiz: Guess the Prophet
+              </button>
             </div>
             <p className="hero-panel__hint">
               Use the top-right icons to toggle fullscreen or mute the soundtrack at any
