@@ -70,10 +70,32 @@ function pickQuizChoices(allCards: GameCard[], correctCard: GameCard, count: num
     .map((card) => toQuizChoice(card));
 }
 
+function generatePromptTypes(count: number): QuizPromptType[] {
+  if (count <= 0) {
+    return [];
+  }
+
+  if (count === 1) {
+    return [Math.random() < 0.5 ? "image-to-name" : "name-to-image"];
+  }
+
+  const half = Math.floor(count / 2);
+  const remainder = count - half;
+  const firstType: QuizPromptType = Math.random() < 0.5 ? "image-to-name" : "name-to-image";
+  const secondType: QuizPromptType = firstType === "image-to-name" ? "name-to-image" : "image-to-name";
+  const pool: QuizPromptType[] = [
+    ...Array(half).fill(firstType),
+    ...Array(remainder).fill(secondType)
+  ];
+  return shuffleArray(pool);
+}
+
 function createQuizQuestions(allCards: GameCard[]): QuizQuestion[] {
   const shuffledCards = shuffleArray(allCards);
-  return shuffledCards.map((card) => {
-    const promptType: QuizPromptType = Math.random() < 0.5 ? "image-to-name" : "name-to-image";
+  const promptTypes = generatePromptTypes(shuffledCards.length);
+
+  return shuffledCards.map((card, index) => {
+    const promptType = promptTypes[index] ?? "image-to-name";
     const distractors = pickQuizChoices(allCards, card, 3);
     const choices = shuffleArray([toQuizChoice(card), ...distractors]);
 
@@ -1006,8 +1028,8 @@ export default function HomePage() {
                           type="button"
                           className={clsx(
                             "pixel-border relative flex h-full flex-col items-center gap-2 bg-panel/70 px-2 py-4 text-center text-xs uppercase tracking-[0.18em] text-slate-200 transition sm:px-4 sm:py-3 sm:text-sm",
-                            reveal && isCorrectChoice && "bg-emerald-700/70",
-                            reveal && isSelected && !isCorrectChoice && "bg-rose-800/70",
+                            reveal && isCorrectChoice && "pixel-border-success bg-emerald-900/80 text-emerald-100",
+                            reveal && isSelected && !isCorrectChoice && "pixel-border-error bg-rose-800/70",
                             !reveal && "hover:-translate-y-[2px]"
                           )}
                           onClick={() => handleQuizChoiceSelect(choice.id)}
@@ -1031,7 +1053,7 @@ export default function HomePage() {
                           {reveal && statusLabel && (
                             <span
                               className={clsx(
-                                "pointer-events-none absolute left-1/2 -top-3 -translate-x-1/2 rounded-sm px-1 py-[1px] text-[9px] uppercase tracking-[0.2em] sm:left-auto sm:right-2 sm:top-2 sm:-translate-x-0 sm:py-[2px]",
+                                "pointer-events-none absolute left-1/2 -top-3 -translate-x-1/2 rounded-sm px-1 py-[2px] text-[9px] uppercase tracking-[0.2em]",
                                 isCorrectChoice
                                   ? "bg-emerald-900/85 text-emerald-200"
                                   : isSelected

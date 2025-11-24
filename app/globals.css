@@ -89,6 +89,22 @@ a {
   color: #1b1d2b;
 }
 
+.pixel-border-success {
+  box-shadow: 0 0 0 2px #000000, 4px 4px 0 0 #0f5132;
+}
+
+.pixel-border-success::after {
+  border-color: #34d399;
+}
+
+.pixel-border-error {
+  box-shadow: 0 0 0 2px #000000, 4px 4px 0 0 #7f1d1d;
+}
+
+.pixel-border-error::after {
+  border-color: #f87171;
+}
+
 .pixel-toggle:focus-visible {
   outline: none;
   filter: brightness(1.05);
